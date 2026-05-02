@@ -1,0 +1,12 @@
+node_modules
+
+# Environment — NUNCA subir al repositorio
+.env
+
+# Archivos subidos por usuarios
+uploads/*
+!uploads/.gitkeep
+
+# Logs
+*.log
+npm-debug.log*
