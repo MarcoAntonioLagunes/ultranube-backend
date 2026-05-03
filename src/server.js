@@ -66,17 +66,18 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/ai', aiRoutes);
 
 // ── Arrancar servidor ─────────────────────────────────────────────────────────
+// Escuchar primero para que Railway/Render pasen el healthcheck inmediatamente;
+// la conexión a MongoDB se establece en paralelo.
 const PORT = process.env.PORT || 4012;
+
+app.listen(PORT, () => {
+  console.log(`API Ultranube escuchando en puerto ${PORT}`);
+});
 
 mongoose
   .connect(process.env.MONGODB_URI || process.env.MONGO_URI)
-  .then(() => {
-    console.log('MongoDB conectado ✅');
-    app.listen(PORT, () => {
-      console.log(`API Ultranube escuchando en puerto ${PORT}`);
-    });
-  })
+  .then(() => console.log('MongoDB conectado ✅'))
   .catch((err) => {
-    console.error('Error al conectar a MongoDB', err);
+    console.error('Error al conectar a MongoDB:', err.message);
     process.exit(1);
   });
