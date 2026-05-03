@@ -1,6 +1,5 @@
 // src/server.js
 import express from 'express';
-import cors from 'cors';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -18,35 +17,16 @@ dotenv.config();
 const app = express();
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
-const devOrigins = ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'];
-
-function buildAllowedOrigins() {
-  if (!process.env.CORS_ORIGIN) return devOrigins;
-  const origins = [];
-  for (const raw of process.env.CORS_ORIGIN.split(',')) {
-    const o = raw.trim().replace(/\/$/, ''); // strip trailing slash
-    origins.push(o);
-    // auto-include www ↔ non-www counterpart
-    if (o.startsWith('https://www.')) origins.push(o.replace('https://www.', 'https://'));
-    else if (o.startsWith('https://'))   origins.push(o.replace('https://', 'https://www.'));
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', 'https://ultranube.com.mx');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
   }
-  return origins;
-}
-
-const allowedOrigins = buildAllowedOrigins();
-console.log('CORS origins allowed:', allowedOrigins);
-
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      if (!origin) return callback(null, true); // Postman / mobile / server-to-server
-      const normalized = origin.replace(/\/$/, '');
-      if (allowedOrigins.includes(normalized)) return callback(null, true);
-      callback(new Error(`CORS: origen no permitido → ${origin}`));
-    },
-    credentials: true,
-  })
-);
+  next();
+});
 
 // ── Rate limiting global ───────────────────────────────────────────────────────
 const globalLimiter = rateLimit({
