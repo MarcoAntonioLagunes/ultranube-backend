@@ -18,16 +18,30 @@ dotenv.config();
 const app = express();
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
-const allowedOrigins = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim())
-  : ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'];
+const devOrigins = ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'];
+
+function buildAllowedOrigins() {
+  if (!process.env.CORS_ORIGIN) return devOrigins;
+  const origins = [];
+  for (const raw of process.env.CORS_ORIGIN.split(',')) {
+    const o = raw.trim().replace(/\/$/, ''); // strip trailing slash
+    origins.push(o);
+    // auto-include www ↔ non-www counterpart
+    if (o.startsWith('https://www.')) origins.push(o.replace('https://www.', 'https://'));
+    else if (o.startsWith('https://'))   origins.push(o.replace('https://', 'https://www.'));
+  }
+  return origins;
+}
+
+const allowedOrigins = buildAllowedOrigins();
+console.log('CORS origins allowed:', allowedOrigins);
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Permite requests sin origin (Postman, mobile, etc.)
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin)) return callback(null, true);
+      if (!origin) return callback(null, true); // Postman / mobile / server-to-server
+      const normalized = origin.replace(/\/$/, '');
+      if (allowedOrigins.includes(normalized)) return callback(null, true);
       callback(new Error(`CORS: origen no permitido → ${origin}`));
     },
     credentials: true,
@@ -75,7 +89,7 @@ app.use('/api/ai', aiRoutes);
 const PORT = process.env.PORT || 4012;
 
 mongoose
-  .connect(process.env.MONGO_URI)
+  .connect(process.env.MONGODB_URI || process.env.MONGO_URI)
   .then(() => {
     console.log('MongoDB conectado ✅');
     app.listen(PORT, () => {
