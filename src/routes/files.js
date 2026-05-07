@@ -203,36 +203,90 @@ async function extractWithClaude(buffer) {
   return data.content[0].text;
 }
 
-// ── Method 4: pdfjs-dist (Node legacy build) ─────────────────────────────────
-async function extractWithPdfjs(buffer) {
-  const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+// ── Method 4: OCR — pdftoppm (poppler) → page images → Claude vision ────────
+// pdftoppm is bundled inside poppler_utils (already in nixpacks.toml).
+// Converts each page to a PNG at 150 DPI, then sends all images to Claude
+// vision in a single request. Handles any font encoding and scanned PDFs.
+const MAX_OCR_PAGES = 20; // stay within Claude's context limits
 
-  const doc = await pdfjsLib.getDocument({
-    data: new Uint8Array(buffer),
-    useWorkerFetch:      false,
-    isEvalSupported:     false,
-    useSystemFonts:      true,
-    standardFontDataUrl: null,
-  }).promise;
+async function extractWithOcrClaude(buffer) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY not configured');
 
-  let fullText = '';
-  for (let i = 1; i <= doc.numPages; i++) {
-    const page    = await doc.getPage(i);
-    const content = await page.getTextContent({ normalizeWhitespace: true, disableFontFace: true });
-    let pageText  = '';
-    for (const item of content.items) {
-      if (!item.str) continue;
-      pageText += item.str;
-      if (item.hasEOL) pageText += '\n';
+  const tmpDir = path.join(os.tmpdir(), `ultranube-ocr-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const tmpPdf = path.join(tmpDir, 'input.pdf');
+
+  await fs.promises.mkdir(tmpDir, { recursive: true });
+  await fs.promises.writeFile(tmpPdf, buffer);
+
+  try {
+    // Render pages to PNG at 150 DPI — good enough for text, keeps images small
+    await execFileAsync(
+      'pdftoppm',
+      ['-r', '150', '-png', tmpPdf, path.join(tmpDir, 'page')],
+      { maxBuffer: 200 * 1024 * 1024 }
+    );
+
+    const pageFiles = (await fs.promises.readdir(tmpDir))
+      .filter(f => /^page.*\.png$/i.test(f))
+      .sort((a, b) => {
+        const n = s => parseInt(s.match(/(\d+)\.png$/i)?.[1] ?? '0', 10);
+        return n(a) - n(b);
+      })
+      .slice(0, MAX_OCR_PAGES);
+
+    if (pageFiles.length === 0) throw new Error('pdftoppm produced no images');
+
+    // Build Claude message: interleave image blocks with page labels
+    const content = [];
+    for (let i = 0; i < pageFiles.length; i++) {
+      const imgBuf = await fs.promises.readFile(path.join(tmpDir, pageFiles[i]));
+      content.push({
+        type: 'text',
+        text: `[Página ${i + 1}]`,
+      });
+      content.push({
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: imgBuf.toString('base64') },
+      });
     }
-    fullText += pageText.replace(/[ \t]+/g, ' ').trim() + '\f';
+    content.push({
+      type: 'text',
+      text:
+        'Extract ALL the text visible in these PDF page images, in the same language as the original. ' +
+        'Preserve paragraph structure with line breaks. ' +
+        'Separate pages with a single form-feed character \\f. ' +
+        'Return ONLY the extracted text — no commentary, no markdown.',
+    });
+
+    const resp = await fetch(ANTHROPIC_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: EXTRACT_MODEL,
+        max_tokens: 4096,
+        messages: [{ role: 'user', content }],
+      }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.error?.message || `Anthropic vision error ${resp.status}`);
+    }
+
+    const data = await resp.json();
+    return data.content[0].text;
+  } finally {
+    fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
-  return { text: fullText, numpages: doc.numPages };
 }
 
 // POST /extract-pdf-text
-// Tries pdftotext → pdf-parse → pdfjs in order; uses first result that passes quality check.
+// Cascade: pdftotext → pdf-parse → Claude (doc) → Claude vision OCR → 422
 router.post(
   '/extract-pdf-text',
   memUpload.single('pdf'),
@@ -250,7 +304,6 @@ router.post(
         if (pages) return res.json({ pages });
       } catch (e) {
         if (e.code !== 'ENOENT') console.warn('pdftotext failed:', e.message);
-        // ENOENT = not installed, silent fallthrough
       }
 
       // ── 2. pdf-parse ──────────────────────────────────────────────────────
@@ -262,25 +315,26 @@ router.post(
         console.warn('pdf-parse failed:', e.message);
       }
 
-      // ── 3. Claude API (vision/document) ──────────────────────────────────
+      // ── 3. Claude API — PDF document (native) ─────────────────────────────
       try {
         const text  = await extractWithClaude(buffer);
         const pgArr = toPages(text);
-        const total = pgArr.reduce((s, p) => s + p.length, 0);
-        if (pgArr.length > 0 && total >= 50) {
+        if (pgArr.length > 0 && pgArr.reduce((s, p) => s + p.length, 0) >= 50) {
           return res.json({ pages: pgArr });
         }
       } catch (e) {
-        console.warn('Claude extraction failed:', e.message);
+        console.warn('Claude doc extraction failed:', e.message);
       }
 
-      // ── 4. pdfjs-dist Node legacy ─────────────────────────────────────────
+      // ── 4. Claude vision OCR (pdftoppm → images) ──────────────────────────
       try {
-        const { text, numpages } = await extractWithPdfjs(buffer);
-        pages = qualityOk(text, numpages);
-        if (pages) return res.json({ pages });
+        const text  = await extractWithOcrClaude(buffer);
+        const pgArr = toPages(text);
+        if (pgArr.length > 0 && pgArr.reduce((s, p) => s + p.length, 0) >= 50) {
+          return res.json({ pages: pgArr });
+        }
       } catch (e) {
-        console.warn('pdfjs fallback failed:', e.message);
+        if (e.code !== 'ENOENT') console.warn('Claude OCR failed:', e.message);
       }
 
       return res.status(422).json({ message: INCOMPATIBLE_MSG });
