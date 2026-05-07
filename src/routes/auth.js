@@ -52,8 +52,19 @@ function createToken(user) {
   );
 }
 
+const BASE_URL = (process.env.BASE_URL || '').replace(/\/$/, '');
+
+function resolveAvatar(avatar) {
+  if (!avatar) return null;
+  // Rewrite stale localhost URLs stored before BASE_URL was configured
+  if (avatar.startsWith('http://localhost')) return avatar.replace(/^http:\/\/localhost:\d+/, BASE_URL);
+  // Relative path → prepend BASE_URL
+  if (avatar.startsWith('/')) return `${BASE_URL}${avatar}`;
+  return avatar;
+}
+
 const userPayload = (u) => ({
-  id: u._id, name: u.name, email: u.email, role: u.role, avatar: u.avatar || null,
+  id: u._id, name: u.name, email: u.email, role: u.role, avatar: resolveAvatar(u.avatar),
 });
 
 // ── POST /register ────────────────────────────────────────────────────────────
@@ -130,8 +141,8 @@ router.patch('/me', authMiddleware, async (req, res) => {
 router.post('/avatar', authMiddleware, avatarUpload.single('avatar'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: 'No se envió imagen' });
-    const avatarUrl = `${process.env.BASE_URL || 'http://localhost:4012'}/uploads/avatars/${req.file.filename}`;
-    const user = await User.findByIdAndUpdate(req.userId, { avatar: avatarUrl }, { new: true });
+    const avatarPath = `/uploads/avatars/${req.file.filename}`;
+    const user = await User.findByIdAndUpdate(req.userId, { avatar: avatarPath }, { new: true });
     return res.json({ ok: true, user: userPayload(user) });
   } catch (err) {
     console.error('avatar error:', err);

@@ -1,7 +1,13 @@
 // src/controllers/filesController.js
 import File from '../models/File.js';
 import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import logActivity from '../utils/logActivity.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __ctrlDir  = path.dirname(__filename);
+const UPLOADS_DIR = path.join(__ctrlDir, '../../uploads');
 
 const getUserId = (req) => req.userId || req.user?.id || req.user?._id;
 
@@ -139,11 +145,12 @@ export const deleteFile = async (req, res) => {
     const deletedName = fileDoc.originalName;
     await File.deleteOne({ _id: fileDoc._id });
 
-    if (fileDoc.path && fs.existsSync(fileDoc.path)) {
-      fs.unlink(fileDoc.path, (err) => {
-        if (err) {
-          console.warn('No se pudo borrar archivo físico:', err.message);
-        }
+    const physicalPath = fileDoc.fileName
+      ? path.join(UPLOADS_DIR, fileDoc.fileName)
+      : fileDoc.path;
+    if (physicalPath && fs.existsSync(physicalPath)) {
+      fs.unlink(physicalPath, (err) => {
+        if (err) console.warn('No se pudo borrar archivo físico:', err.message);
       });
     }
 
@@ -242,7 +249,13 @@ export const downloadFile = async (req, res) => {
       return res.status(404).json({ message: 'Archivo no encontrado.' });
     }
 
-    if (!fileDoc.path || !fs.existsSync(fileDoc.path)) {
+    // Reconstruct path from fileName to avoid stale absolute paths saved during
+    // a different deployment or on a local machine.
+    const physicalPath = fileDoc.fileName
+      ? path.join(UPLOADS_DIR, fileDoc.fileName)
+      : fileDoc.path;
+
+    if (!physicalPath || !fs.existsSync(physicalPath)) {
       return res
         .status(404)
         .json({ message: 'Archivo físico no encontrado en el servidor.' });
@@ -250,7 +263,7 @@ export const downloadFile = async (req, res) => {
 
     const filename = decodeSafe(fileDoc.originalName || fileDoc.fileName || 'archivo');
     logActivity(ownerId, 'download', filename);
-    res.download(fileDoc.path, filename);
+    res.download(physicalPath, filename);
   } catch (err) {
     console.error('downloadFile error:', err);
     return res.status(500).json({ message: 'Error al descargar archivo.' });
