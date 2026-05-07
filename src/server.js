@@ -17,14 +17,25 @@ dotenv.config();
 const app = express();
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
+const ALLOWED_ORIGINS = new Set([
+  'https://ultranube.com.mx',
+  'https://www.ultranube.com.mx',
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:3000',
+  // Variable de entorno para añadir orígenes extra sin tocar el código
+  ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim()) : []),
+]);
+
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', 'https://ultranube.com.mx');
+  const origin = req.headers.origin;
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  }
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
   res.header('Access-Control-Allow-Credentials', 'true');
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
 
