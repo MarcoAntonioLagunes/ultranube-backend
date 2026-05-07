@@ -45,4 +45,55 @@ router.get('/storage', authMiddleware, async (req, res) => {
   }
 });
 
+router.get('/type-breakdown', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user?.id || req.user?._id;
+    const oid = new mongoose.Types.ObjectId(String(userId));
+
+    const result = await File.aggregate([
+      { $match: { owner: oid } },
+      {
+        $group: {
+          _id: '$mimeType',
+          count: { $sum: 1 },
+          size: { $sum: '$size' },
+        },
+      },
+    ]);
+
+    const categories = {
+      PDFs:       { count: 0, size: 0 },
+      Imágenes:   { count: 0, size: 0 },
+      Documentos: { count: 0, size: 0 },
+      Videos:     { count: 0, size: 0 },
+      Audio:      { count: 0, size: 0 },
+      Otros:      { count: 0, size: 0 },
+    };
+
+    for (const row of result) {
+      const m = row._id || '';
+      let cat;
+      if (m === 'application/pdf')                                    cat = 'PDFs';
+      else if (m.startsWith('image/'))                                cat = 'Imágenes';
+      else if (m.includes('word') || m.includes('document') ||
+               m === 'text/plain' || m === 'text/markdown')           cat = 'Documentos';
+      else if (m.startsWith('video/'))                                cat = 'Videos';
+      else if (m.startsWith('audio/'))                                cat = 'Audio';
+      else                                                            cat = 'Otros';
+
+      categories[cat].count += row.count;
+      categories[cat].size  += row.size;
+    }
+
+    const breakdown = Object.entries(categories)
+      .map(([name, data]) => ({ name, ...data }))
+      .filter(c => c.count > 0);
+
+    return res.json(breakdown);
+  } catch (err) {
+    console.error('type-breakdown error:', err);
+    return res.status(500).json({ message: 'Error al obtener desglose.' });
+  }
+});
+
 export default router;

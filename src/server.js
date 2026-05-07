@@ -11,6 +11,7 @@ import filesRoutes from './routes/files.js';
 import driveRoutes from './routes/drive.js';
 import searchRoutes from './routes/search.js';
 import dashboardRoutes from './routes/dashboard.js';
+import activitiesRoutes from './routes/activities.js';
 
 dotenv.config();
 
@@ -74,6 +75,7 @@ app.use('/api/files', filesRoutes);
 app.use('/api/drive', driveRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/activities', activitiesRoutes);
 app.use('/api/ai', aiRoutes);
 
 // ── Arrancar servidor ─────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 // src/controllers/driveController.js
 import Folder from '../models/Folder.js';
 import File from '../models/File.js';
+import logActivity from '../utils/logActivity.js';
 
 function getUserId(req) {
   return req.userId || req.user?.id || req.user?._id;
@@ -123,6 +124,7 @@ export const createFolder = async (req, res) => {
       owner,
     });
 
+    logActivity(owner, 'create_folder', trimmedName);
     return res.status(201).json(folder);
   } catch (err) {
     console.error('createFolder error:', err);
@@ -180,6 +182,7 @@ export const renameFolder = async (req, res) => {
     folder.name = trimmedName;
     await folder.save();
 
+    logActivity(owner, 'rename', trimmedName);
     return res.json(folder);
   } catch (err) {
     console.error('renameFolder error:', err);
@@ -224,8 +227,10 @@ export const deleteFolder = async (req, res) => {
       });
     }
 
+    const folderName = folder.name;
     await Folder.deleteOne({ _id: id, owner });
 
+    logActivity(owner, 'delete_folder', folderName);
     return res.json({ ok: true, message: 'Carpeta eliminada.' });
   } catch (err) {
     console.error('deleteFolder error:', err);

@@ -1,6 +1,7 @@
 // src/controllers/filesController.js
 import File from '../models/File.js';
 import fs from 'fs';
+import logActivity from '../utils/logActivity.js';
 
 const getUserId = (req) => req.userId || req.user?.id || req.user?._id;
 
@@ -52,6 +53,7 @@ export const uploadFile = async (req, res) => {
       path: req.file.path,
     });
 
+    logActivity(ownerId, 'upload', originalName, { size: req.file.size });
     return res.status(201).json(fileDoc);
   } catch (err) {
     console.error('uploadFile error:', err);
@@ -118,6 +120,7 @@ export const deleteFile = async (req, res) => {
       return res.status(404).json({ message: 'Archivo no encontrado.' });
     }
 
+    const deletedName = fileDoc.originalName;
     await File.deleteOne({ _id: fileDoc._id });
 
     if (fileDoc.path && fs.existsSync(fileDoc.path)) {
@@ -128,6 +131,7 @@ export const deleteFile = async (req, res) => {
       });
     }
 
+    logActivity(ownerId, 'delete_file', deletedName);
     return res.json({ message: 'Archivo eliminado.' });
   } catch (err) {
     console.error('deleteFile error:', err);
@@ -180,6 +184,7 @@ export const moveFile = async (req, res) => {
 
     fileDoc.folder = targetFolder;
     await fileDoc.save();
+    logActivity(ownerId, 'move', fileDoc.originalName);
     return res.json(fileDoc);
   } catch (err) {
     console.error('moveFile error:', err);
@@ -228,6 +233,7 @@ export const downloadFile = async (req, res) => {
     }
 
     const filename = decodeSafe(fileDoc.originalName || fileDoc.fileName || 'archivo');
+    logActivity(ownerId, 'download', filename);
     res.download(fileDoc.path, filename);
   } catch (err) {
     console.error('downloadFile error:', err);
