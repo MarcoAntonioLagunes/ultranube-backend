@@ -89,6 +89,7 @@ mongoose
   .connect(process.env.MONGODB_URI || process.env.MONGO_URI)
   .then(() => console.log('MongoDB conectado ✅'))
   .catch((err) => {
+    // No llamar process.exit() — si MongoDB falla el servidor sigue
+    // respondiendo /api/health para que Railway no marque 502.
     console.error('Error al conectar a MongoDB:', err.message);
-    process.exit(1);
   });
