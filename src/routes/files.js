@@ -259,19 +259,28 @@ async function extractWithOcrClaude(buffer) {
         'Return ONLY the extracted text — no commentary, no markdown.',
     });
 
-    const resp = await fetch(ANTHROPIC_URL, {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: EXTRACT_MODEL,
-        max_tokens: 4096,
-        messages: [{ role: 'user', content }],
-      }),
-    });
+    const ocrAbort  = new AbortController();
+    const ocrTimer  = setTimeout(() => ocrAbort.abort(), 60_000);
+
+    let resp;
+    try {
+      resp = await fetch(ANTHROPIC_URL, {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: EXTRACT_MODEL,
+          max_tokens: 4096,
+          messages: [{ role: 'user', content }],
+        }),
+        signal: ocrAbort.signal,
+      });
+    } finally {
+      clearTimeout(ocrTimer);
+    }
 
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
@@ -287,11 +296,21 @@ async function extractWithOcrClaude(buffer) {
 
 // POST /extract-pdf-text
 // Cascade: pdftotext → pdf-parse → Claude (doc) → Claude vision OCR → 422
+// Overall timeout: 120 s. Claude vision OCR individually capped at 60 s.
 router.post(
   '/extract-pdf-text',
   memUpload.single('pdf'),
   handleMulterError,
   async (req, res) => {
+    // 120-second hard deadline for the whole endpoint
+    const globalTimer = setTimeout(() => {
+      if (!res.headersSent) {
+        res.status(408).json({
+          message: 'El procesamiento tardó demasiado. Intenta con un PDF más pequeño o con menos páginas.',
+        });
+      }
+    }, 120_000);
+
     try {
       if (!req.file) return res.status(400).json({ message: 'No se envió PDF' });
       const buffer = req.file.buffer;
@@ -326,7 +345,7 @@ router.post(
         console.warn('Claude doc extraction failed:', e.message);
       }
 
-      // ── 4. Claude vision OCR (pdftoppm → images) ──────────────────────────
+      // ── 4. Claude vision OCR (pdftoppm → images, 60 s cap) ───────────────
       try {
         const text  = await extractWithOcrClaude(buffer);
         const pgArr = toPages(text);
@@ -334,13 +353,21 @@ router.post(
           return res.json({ pages: pgArr });
         }
       } catch (e) {
-        if (e.code !== 'ENOENT') console.warn('Claude OCR failed:', e.message);
+        if (e.name === 'AbortError') {
+          console.warn('Claude OCR timed out after 60 s');
+        } else if (e.code !== 'ENOENT') {
+          console.warn('Claude OCR failed:', e.message);
+        }
       }
 
       return res.status(422).json({ message: INCOMPATIBLE_MSG });
     } catch (err) {
       console.error('extract-pdf-text error:', err);
-      return res.status(500).json({ message: `Error al extraer texto: ${err.message}` });
+      if (!res.headersSent) {
+        return res.status(500).json({ message: `Error al extraer texto: ${err.message}` });
+      }
+    } finally {
+      clearTimeout(globalTimer);
     }
   }
 );
