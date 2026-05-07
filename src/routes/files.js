@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 
+import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 import authMiddleware from '../middleware/auth.js';
 import {
   uploadFile,
@@ -70,6 +71,13 @@ const upload = multer({
   fileFilter,
 });
 
+const memUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_FILE_SIZE },
+  fileFilter: (_req, file, cb) =>
+    file.mimetype === 'application/pdf' ? cb(null, true) : cb(new Error('Solo PDFs')),
+});
+
 // ── Middleware de error de multer ──────────────────────────────────────────────
 function handleMulterError(err, _req, res, next) {
   if (err instanceof multer.MulterError) {
@@ -86,6 +94,29 @@ function handleMulterError(err, _req, res, next) {
 
 // ── Rutas ──────────────────────────────────────────────────────────────────────
 router.use(authMiddleware);
+
+// POST /extract-pdf-text — extract plain text from a PDF via pdf-parse (Node.js)
+// Better encoding handling than pdfjs in the browser for fonts with custom ToUnicode maps.
+router.post(
+  '/extract-pdf-text',
+  memUpload.single('pdf'),
+  handleMulterError,
+  async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ message: 'No se envió PDF' });
+      const result = await pdfParse(req.file.buffer);
+      // pdf-parse uses \f (form feed) as page separator
+      const pages = result.text
+        .split('\f')
+        .map(p => p.replace(/[ \t]+/g, ' ').trim())
+        .filter(Boolean);
+      return res.json({ text: result.text, pages });
+    } catch (err) {
+      console.error('extract-pdf-text error:', err);
+      return res.status(500).json({ message: `Error al extraer texto: ${err.message}` });
+    }
+  }
+);
 
 router.post('/upload', upload.single('file'), handleMulterError, uploadFile);
 router.get('/all', getAllFiles);
