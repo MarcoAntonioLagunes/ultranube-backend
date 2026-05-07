@@ -14,6 +14,22 @@ function decodeSafe(value) {
   }
 }
 
+// Multer reads Content-Disposition bytes as Latin-1.
+// If the browser sent raw UTF-8 bytes (not percent-encoded), the string is Mojibake.
+// Re-interpret as UTF-8; falls back to percent-decoding first for browsers that do encode.
+function fixMulterEncoding(value) {
+  if (!value) return '';
+  try {
+    const decoded = decodeURIComponent(value);
+    if (decoded !== value) return decoded; // was percent-encoded — trust it
+  } catch { /* not percent-encoded */ }
+  try {
+    return Buffer.from(value, 'latin1').toString('utf8');
+  } catch {
+    return value;
+  }
+}
+
 // =================== SUBIR ARCHIVO ===================
 export const uploadFile = async (req, res) => {
   try {
@@ -29,7 +45,7 @@ export const uploadFile = async (req, res) => {
     const { folderId, folder } = req.body;
     const folderRef = folderId || folder || null;
 
-    const originalName = decodeSafe(req.file.originalname);
+    const originalName = fixMulterEncoding(req.file.originalname);
 
     const existing = await File.findOne({
       owner: ownerId,

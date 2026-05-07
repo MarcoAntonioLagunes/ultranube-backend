@@ -42,4 +42,32 @@ router.get('/recent', authMiddleware, async (req, res) => {
   }
 });
 
+// DELETE /api/activities — clear all activities for the user
+router.delete('/', authMiddleware, async (req, res) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.status(401).json({ message: 'No autenticado.' });
+
+    await Activity.deleteMany({ userId });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('clear activities error:', err);
+    return res.status(500).json({ message: 'Error al limpiar historial.' });
+  }
+});
+
+// DELETE /api/activities/:id — delete a specific activity entry
+router.delete('/:id', authMiddleware, async (req, res) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.status(401).json({ message: 'No autenticado.' });
+
+    await Activity.deleteOne({ _id: req.params.id, userId });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('delete activity error:', err);
+    return res.status(500).json({ message: 'Error al eliminar registro.' });
+  }
+});
+
 export default router;

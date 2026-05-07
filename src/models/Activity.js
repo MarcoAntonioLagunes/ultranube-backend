@@ -25,6 +25,8 @@ const activitySchema = new mongoose.Schema(
 );
 
 activitySchema.index({ userId: 1, createdAt: -1 });
+// MongoDB TTL: auto-delete records older than 7 days
+activitySchema.index({ createdAt: 1 }, { expireAfterSeconds: 7 * 24 * 60 * 60 });
 
 const Activity = mongoose.model('Activity', activitySchema);
 export default Activity;
