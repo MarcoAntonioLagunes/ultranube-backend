@@ -99,16 +99,51 @@ const INCOMPATIBLE_MSG =
   'Este PDF no es compatible con el traductor — contiene imágenes o fuentes no estándar ' +
   'que no se pueden extraer. Por favor usa un PDF con texto seleccionable.';
 
-// Returns true when the text looks like garbled per-glyph output ("n a n c e")
+// >40% of words are 1-2 chars → likely garbled per-glyph output ("n a n a n c e")
 function isGarbled(text) {
   const words = text.trim().split(/\s+/).filter(Boolean);
-  if (words.length < 15) return false; // too few words to judge reliably
-  const singleChar = words.filter(w => w.length === 1).length;
-  return singleChar / words.length > 0.55;
+  if (words.length < 15) return false;
+  const short = words.filter(w => w.length <= 2).length;
+  return short / words.length > 0.40;
 }
 
-// POST /extract-pdf-text — extract plain text from a PDF via pdf-parse (Node.js)
-// Better encoding handling than pdfjs in the browser for fonts with custom ToUnicode maps.
+function toPages(rawText) {
+  return rawText
+    .split('\f')
+    .map(p => p.replace(/[ \t]+/g, ' ').trim())
+    .filter(Boolean);
+}
+
+// Extract text with pdfjs-dist (legacy/Node build) — handles more font types than pdf-parse
+async function extractWithPdfjs(buffer) {
+  const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  // Disable the Web Worker — not available in Node.js
+  pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+
+  const doc = await pdfjsLib.getDocument({
+    data: new Uint8Array(buffer),
+    useWorkerFetch:   false,
+    isEvalSupported:  false,
+    useSystemFonts:   true,
+    standardFontDataUrl: null,
+  }).promise;
+
+  let fullText = '';
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page    = await doc.getPage(i);
+    const content = await page.getTextContent({ normalizeWhitespace: true, disableFontFace: true });
+    let pageText  = '';
+    for (const item of content.items) {
+      if (!item.str) continue;
+      pageText += item.str;
+      if (item.hasEOL) pageText += '\n';
+    }
+    fullText += pageText.replace(/[ \t]+/g, ' ').trim() + '\f';
+  }
+  return { text: fullText, numpages: doc.numPages };
+}
+
+// POST /extract-pdf-text — tries pdf-parse first, falls back to pdfjs-dist if garbled
 router.post(
   '/extract-pdf-text',
   memUpload.single('pdf'),
@@ -116,29 +151,40 @@ router.post(
   async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ message: 'No se envió PDF' });
-      const result = await pdfParse(req.file.buffer);
+      const buffer = req.file.buffer;
 
-      // pdf-parse uses \f (form feed) as page separator
-      const pages = result.text
-        .split('\f')
-        .map(p => p.replace(/[ \t]+/g, ' ').trim())
-        .filter(Boolean);
+      // ── Method 1: pdf-parse ───────────────────────────────────────────────
+      let chosen = null;
+      try {
+        const result = await pdfParse(buffer);
+        const pages  = toPages(result.text);
+        const total  = pages.reduce((s, p) => s + p.length, 0);
+        const avg    = total / Math.max(result.numpages || pages.length, 1);
+        if (total >= 50 && avg >= 50 && !isGarbled(result.text)) {
+          chosen = { text: result.text, pages };
+        }
+      } catch { /* fall through to pdfjs */ }
 
-      const totalChars = pages.reduce((s, p) => s + p.length, 0);
-      const numPages   = Math.max(result.numpages || pages.length, 1);
-      const avgCharsPerPage = totalChars / numPages;
+      // ── Method 2: pdfjs-dist (Node, legacy build) ─────────────────────────
+      if (!chosen) {
+        try {
+          const result = await extractWithPdfjs(buffer);
+          const pages  = toPages(result.text);
+          const total  = pages.reduce((s, p) => s + p.length, 0);
+          const avg    = total / Math.max(result.numpages || pages.length, 1);
+          if (total >= 50 && avg >= 50 && !isGarbled(result.text)) {
+            chosen = { text: result.text, pages };
+          }
+        } catch (e) {
+          console.warn('pdfjs fallback failed:', e.message);
+        }
+      }
 
-      // Scanned PDF or failed encoding → no usable text
-      if (totalChars < 50 || avgCharsPerPage < 50) {
+      if (!chosen) {
         return res.status(422).json({ message: INCOMPATIBLE_MSG });
       }
 
-      // Garbled output — per-glyph encoding that pdf-parse couldn't decode
-      if (isGarbled(result.text)) {
-        return res.status(422).json({ message: INCOMPATIBLE_MSG });
-      }
-
-      return res.json({ text: result.text, pages });
+      return res.json({ text: chosen.text, pages: chosen.pages });
     } catch (err) {
       console.error('extract-pdf-text error:', err);
       return res.status(500).json({ message: `Error al extraer texto: ${err.message}` });
