@@ -2,10 +2,15 @@
 import express from 'express';
 import multer from 'multer';
 import path from 'path';
+import os from 'os';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 
 import pdfParse from 'pdf-parse/lib/pdf-parse.js';
+
+const execFileAsync = promisify(execFile);
 import authMiddleware from '../middleware/auth.js';
 import {
   uploadFile,
@@ -107,6 +112,15 @@ function isGarbled(text) {
   return short / words.length > 0.40;
 }
 
+function qualityOk(text, numPages) {
+  const pages = toPages(text);
+  const total = pages.reduce((s, p) => s + p.length, 0);
+  const avg   = total / Math.max(numPages || pages.length, 1);
+  return total >= 50 && avg >= 50 && !isGarbled(text)
+    ? pages
+    : null;
+}
+
 function toPages(rawText) {
   return rawText
     .split('\f')
@@ -114,17 +128,38 @@ function toPages(rawText) {
     .filter(Boolean);
 }
 
-// Extract text with pdfjs-dist (legacy/Node build) — handles more font types than pdf-parse
+// ── Method 1: pdftotext (poppler) — best encoding support ────────────────────
+// Handles Type1, CIDFont, and most ToUnicode maps correctly.
+// Requires poppler-utils installed (nixpacks.toml on Railway, bundled with Git on Windows).
+async function extractWithPdftotext(buffer) {
+  const tmpFile = path.join(os.tmpdir(), `ultranube-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`);
+  try {
+    await fs.promises.writeFile(tmpFile, buffer);
+    const { stdout } = await execFileAsync('pdftotext', ['-enc', 'UTF-8', tmpFile, '-'], {
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    return stdout;
+  } finally {
+    fs.promises.unlink(tmpFile).catch(() => {});
+  }
+}
+
+// ── Method 2: pdf-parse (Node) ────────────────────────────────────────────────
+async function extractWithPdfParse(buffer) {
+  const result = await pdfParse(buffer);
+  return { text: result.text, numpages: result.numpages };
+}
+
+// ── Method 3: pdfjs-dist (Node legacy build) ─────────────────────────────────
 async function extractWithPdfjs(buffer) {
   const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  // Disable the Web Worker — not available in Node.js
   pdfjsLib.GlobalWorkerOptions.workerSrc = '';
 
   const doc = await pdfjsLib.getDocument({
     data: new Uint8Array(buffer),
-    useWorkerFetch:   false,
-    isEvalSupported:  false,
-    useSystemFonts:   true,
+    useWorkerFetch:      false,
+    isEvalSupported:     false,
+    useSystemFonts:      true,
     standardFontDataUrl: null,
   }).promise;
 
@@ -143,7 +178,8 @@ async function extractWithPdfjs(buffer) {
   return { text: fullText, numpages: doc.numPages };
 }
 
-// POST /extract-pdf-text — tries pdf-parse first, falls back to pdfjs-dist if garbled
+// POST /extract-pdf-text
+// Tries pdftotext → pdf-parse → pdfjs in order; uses first result that passes quality check.
 router.post(
   '/extract-pdf-text',
   memUpload.single('pdf'),
@@ -153,38 +189,36 @@ router.post(
       if (!req.file) return res.status(400).json({ message: 'No se envió PDF' });
       const buffer = req.file.buffer;
 
-      // ── Method 1: pdf-parse ───────────────────────────────────────────────
-      let chosen = null;
+      // ── 1. pdftotext (poppler) ────────────────────────────────────────────
+      let pages = null;
       try {
-        const result = await pdfParse(buffer);
-        const pages  = toPages(result.text);
-        const total  = pages.reduce((s, p) => s + p.length, 0);
-        const avg    = total / Math.max(result.numpages || pages.length, 1);
-        if (total >= 50 && avg >= 50 && !isGarbled(result.text)) {
-          chosen = { text: result.text, pages };
-        }
-      } catch { /* fall through to pdfjs */ }
-
-      // ── Method 2: pdfjs-dist (Node, legacy build) ─────────────────────────
-      if (!chosen) {
-        try {
-          const result = await extractWithPdfjs(buffer);
-          const pages  = toPages(result.text);
-          const total  = pages.reduce((s, p) => s + p.length, 0);
-          const avg    = total / Math.max(result.numpages || pages.length, 1);
-          if (total >= 50 && avg >= 50 && !isGarbled(result.text)) {
-            chosen = { text: result.text, pages };
-          }
-        } catch (e) {
-          console.warn('pdfjs fallback failed:', e.message);
-        }
+        const text = await extractWithPdftotext(buffer);
+        pages = qualityOk(text, 0);
+        if (pages) return res.json({ pages });
+      } catch (e) {
+        if (e.code !== 'ENOENT') console.warn('pdftotext failed:', e.message);
+        // ENOENT = not installed, silent fallthrough
       }
 
-      if (!chosen) {
-        return res.status(422).json({ message: INCOMPATIBLE_MSG });
+      // ── 2. pdf-parse ──────────────────────────────────────────────────────
+      try {
+        const { text, numpages } = await extractWithPdfParse(buffer);
+        pages = qualityOk(text, numpages);
+        if (pages) return res.json({ pages });
+      } catch (e) {
+        console.warn('pdf-parse failed:', e.message);
       }
 
-      return res.json({ text: chosen.text, pages: chosen.pages });
+      // ── 3. pdfjs-dist Node legacy ─────────────────────────────────────────
+      try {
+        const { text, numpages } = await extractWithPdfjs(buffer);
+        pages = qualityOk(text, numpages);
+        if (pages) return res.json({ pages });
+      } catch (e) {
+        console.warn('pdfjs fallback failed:', e.message);
+      }
+
+      return res.status(422).json({ message: INCOMPATIBLE_MSG });
     } catch (err) {
       console.error('extract-pdf-text error:', err);
       return res.status(500).json({ message: `Error al extraer texto: ${err.message}` });
