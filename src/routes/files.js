@@ -12,6 +12,8 @@ import {
   deleteFile,
   getRecentFiles,
   downloadFile,
+  moveFile,
+  getAllFiles,
 } from '../controllers/filesController.js';
 
 const router = express.Router();
@@ -86,9 +88,11 @@ function handleMulterError(err, _req, res, next) {
 router.use(authMiddleware);
 
 router.post('/upload', upload.single('file'), handleMulterError, uploadFile);
-router.patch('/:id', renameFile);
-router.delete('/:id', deleteFile);
+router.get('/all', getAllFiles);
 router.get('/recent/list', getRecentFiles);
 router.get('/:id/download', downloadFile);
+router.patch('/:id/move', moveFile);
+router.patch('/:id', renameFile);
+router.delete('/:id', deleteFile);
 
 export default router;

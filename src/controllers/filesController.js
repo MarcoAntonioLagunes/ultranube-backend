@@ -154,6 +154,57 @@ export const getRecentFiles = async (req, res) => {
   }
 };
 
+// =================== MOVER ARCHIVO ===================
+export const moveFile = async (req, res) => {
+  try {
+    const ownerId = getUserId(req);
+    const { id } = req.params;
+    const { folderId } = req.body;
+
+    if (!ownerId) return res.status(401).json({ message: 'No autenticado.' });
+
+    const fileDoc = await File.findOne({ _id: id, owner: ownerId });
+    if (!fileDoc) return res.status(404).json({ message: 'Archivo no encontrado.' });
+
+    const targetFolder = folderId || null;
+
+    const duplicate = await File.findOne({
+      _id: { $ne: id },
+      owner: ownerId,
+      folder: targetFolder,
+      originalName: fileDoc.originalName,
+    });
+    if (duplicate) {
+      return res.status(409).json({ message: 'Ya existe un archivo con ese nombre en la carpeta destino.' });
+    }
+
+    fileDoc.folder = targetFolder;
+    await fileDoc.save();
+    return res.json(fileDoc);
+  } catch (err) {
+    console.error('moveFile error:', err);
+    return res.status(500).json({ message: 'Error al mover archivo.' });
+  }
+};
+
+// =================== TODOS LOS ARCHIVOS DEL USUARIO ===================
+export const getAllFiles = async (req, res) => {
+  try {
+    const ownerId = getUserId(req);
+    if (!ownerId) return res.status(401).json({ message: 'No autenticado.' });
+
+    const files = await File.find({ owner: ownerId })
+      .select('originalName mimeType size folder createdAt')
+      .sort({ createdAt: -1 })
+      .limit(500);
+
+    return res.json(files);
+  } catch (err) {
+    console.error('getAllFiles error:', err);
+    return res.status(500).json({ message: 'Error al obtener archivos.' });
+  }
+};
+
 // =================== DESCARGAR ARCHIVO ===================
 export const downloadFile = async (req, res) => {
   try {
