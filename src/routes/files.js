@@ -150,7 +150,60 @@ async function extractWithPdfParse(buffer) {
   return { text: result.text, numpages: result.numpages };
 }
 
-// ── Method 3: pdfjs-dist (Node legacy build) ─────────────────────────────────
+// ── Method 3: Claude API (vision/document) — works on any PDF, incl. scanned ─
+// Sends the PDF as a base64 document to Claude and asks for plain-text extraction.
+// Last resort: costs tokens but handles fonts that all other methods fail on.
+const ANTHROPIC_URL  = 'https://api.anthropic.com/v1/messages';
+const EXTRACT_MODEL  = 'claude-sonnet-4-6';
+const MAX_PDF_CLAUDE = 20 * 1024 * 1024; // 20 MB — stay within Claude's doc limits
+
+async function extractWithClaude(buffer) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY not configured');
+  if (buffer.length > MAX_PDF_CLAUDE) throw new Error('PDF too large for Claude extraction (>20 MB)');
+
+  const base64 = buffer.toString('base64');
+
+  const resp = await fetch(ANTHROPIC_URL, {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: EXTRACT_MODEL,
+      max_tokens: 4096,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: { type: 'base64', media_type: 'application/pdf', data: base64 },
+          },
+          {
+            type: 'text',
+            text:
+              'Extract ALL the text from this PDF exactly as written. ' +
+              'Preserve paragraph structure using line breaks. ' +
+              'Separate each page with the exact string "\\f" (a single form-feed character). ' +
+              'Return ONLY the extracted text — no commentary, no markdown, no explanations.',
+          },
+        ],
+      }],
+    }),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Anthropic API error ${resp.status}`);
+  }
+
+  const data = await resp.json();
+  return data.content[0].text;
+}
+
+// ── Method 4: pdfjs-dist (Node legacy build) ─────────────────────────────────
 async function extractWithPdfjs(buffer) {
   const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
   pdfjsLib.GlobalWorkerOptions.workerSrc = '';
@@ -209,7 +262,19 @@ router.post(
         console.warn('pdf-parse failed:', e.message);
       }
 
-      // ── 3. pdfjs-dist Node legacy ─────────────────────────────────────────
+      // ── 3. Claude API (vision/document) ──────────────────────────────────
+      try {
+        const text  = await extractWithClaude(buffer);
+        const pgArr = toPages(text);
+        const total = pgArr.reduce((s, p) => s + p.length, 0);
+        if (pgArr.length > 0 && total >= 50) {
+          return res.json({ pages: pgArr });
+        }
+      } catch (e) {
+        console.warn('Claude extraction failed:', e.message);
+      }
+
+      // ── 4. pdfjs-dist Node legacy ─────────────────────────────────────────
       try {
         const { text, numpages } = await extractWithPdfjs(buffer);
         pages = qualityOk(text, numpages);
