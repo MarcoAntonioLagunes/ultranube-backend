@@ -95,6 +95,18 @@ function handleMulterError(err, _req, res, next) {
 // ── Rutas ──────────────────────────────────────────────────────────────────────
 router.use(authMiddleware);
 
+const INCOMPATIBLE_MSG =
+  'Este PDF no es compatible con el traductor — contiene imágenes o fuentes no estándar ' +
+  'que no se pueden extraer. Por favor usa un PDF con texto seleccionable.';
+
+// Returns true when the text looks like garbled per-glyph output ("n a n c e")
+function isGarbled(text) {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length < 15) return false; // too few words to judge reliably
+  const singleChar = words.filter(w => w.length === 1).length;
+  return singleChar / words.length > 0.55;
+}
+
 // POST /extract-pdf-text — extract plain text from a PDF via pdf-parse (Node.js)
 // Better encoding handling than pdfjs in the browser for fonts with custom ToUnicode maps.
 router.post(
@@ -105,11 +117,27 @@ router.post(
     try {
       if (!req.file) return res.status(400).json({ message: 'No se envió PDF' });
       const result = await pdfParse(req.file.buffer);
+
       // pdf-parse uses \f (form feed) as page separator
       const pages = result.text
         .split('\f')
         .map(p => p.replace(/[ \t]+/g, ' ').trim())
         .filter(Boolean);
+
+      const totalChars = pages.reduce((s, p) => s + p.length, 0);
+      const numPages   = Math.max(result.numpages || pages.length, 1);
+      const avgCharsPerPage = totalChars / numPages;
+
+      // Scanned PDF or failed encoding → no usable text
+      if (totalChars < 50 || avgCharsPerPage < 50) {
+        return res.status(422).json({ message: INCOMPATIBLE_MSG });
+      }
+
+      // Garbled output — per-glyph encoding that pdf-parse couldn't decode
+      if (isGarbled(result.text)) {
+        return res.status(422).json({ message: INCOMPATIBLE_MSG });
+      }
+
       return res.json({ text: result.text, pages });
     } catch (err) {
       console.error('extract-pdf-text error:', err);
